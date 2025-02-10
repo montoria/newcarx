@@ -64,7 +64,7 @@ class AnimationTimelineNodeImpl implements AnimationTimelineNode {
   private _startTime!: number
   private _completed = false
   public _error = false
-  public subNode?: AnimationTimelineNodeImpl
+  private _subNode?: AnimationTimelineNodeImpl
   public _onCompleted?: () => void
 
   constructor(
@@ -73,43 +73,54 @@ class AnimationTimelineNodeImpl implements AnimationTimelineNode {
     public readonly animator?: Animator,
     public readonly timing?: TimingFunction,
     private readonly _onError?: (err: any) => void,
-    public prevNode?: AnimationTimelineNodeImpl,
-    public nextNode?: AnimationTimelineNodeImpl,
-  ) {}
+    private _prevNode?: AnimationTimelineNodeImpl,
+    private _nextNode?: AnimationTimelineNodeImpl,
+  ) { }
 
-  runStep(ts: number): boolean {
-    try {
-      if (!this._started) {
-        this._started = true
-        this._startTime = performance.now()
-      }
-
-      if (this._completed)
-        return false
-
-      if (ts > this._startTime + this.duration) {
-        this.animator?.(this.timing ? this.timing(1) : 1, 1)
-        return true
-      }
-      else if (ts < this._startTime) {
-        this.animator?.(this.timing ? this.timing(0) : 0, 0)
-        return false
-      }
-      else {
-        const x = (ts - this._startTime) / this.duration
-        this.animator?.(this.timing ? this.timing(x) : x, x)
-        if (x >= 1) {
-          return true
-        }
-
-        return false
-      }
-    }
-    catch (e: any) {
-      this._error = true
-      this._onError?.(e)
+  _tick(ts: number): boolean {
+    if (this._completed || this._error) {
       return true
     }
+
+    try {
+      if (!this._started) {
+        this._initializeAnimation()
+      }
+
+      return this._processAnimationFrame(ts)
+    }
+    catch (e: any) {
+      this._handleError(e)
+      return true
+    }
+  }
+
+  private _initializeAnimation(): void {
+    this._started = true
+    this._startTime = this.timeline.clock.now()
+  }
+
+  private _processAnimationFrame(ts: number): boolean {
+    const progress = this._calculateProgress(ts)
+    this._applyAnimation(progress)
+    return progress >= 1
+  }
+
+  private _calculateProgress(now: number): number {
+    const elapsed = now - this._startTime
+    return Math.min(Math.max(elapsed / this.duration, 0), 1)
+  }
+
+  private _applyAnimation(progress: number): void {
+    if (this.animator) {
+      const timingProgress = this.timing ? this.timing(progress) : progress
+      this.animator(timingProgress, progress)
+    }
+  }
+
+  private _handleError(e: any): void {
+    this._error = true
+    this._onError?.(e)
   }
 
   _complete(): void {
@@ -119,55 +130,65 @@ class AnimationTimelineNodeImpl implements AnimationTimelineNode {
 
     this._completed = true
 
-    if (this.subNode && !this._error) {
-      this._replace(this.subNode)
+    if (this._subNode && !this._error) {
+      this._replace(this._subNode)
     }
     else {
       this._remove()
     }
   }
 
-  _replace(node: AnimationTimelineNodeImpl): void {
-    node.prevNode = this.prevNode
-    node.nextNode = this.nextNode
+  private _replace(node: AnimationTimelineNodeImpl): void {
+    node._prevNode = this._prevNode
+    node._nextNode = this._nextNode
 
-    if ((this.timeline as any).tailNode == this) {
-      (this.timeline as any).tailNode = node
-    }
-
-    if ((this.timeline as any).nextNode == this) {
-      (this.timeline as any).nextNode = node
-    }
-
-    if (this.prevNode) {
-      this.prevNode.nextNode = node
-    }
-
-    if (this.nextNode) {
-      this.nextNode.prevNode = node
-    }
-
+    this._updateTimelineReferences(node)
+    this._updateNodeLinks(node)
     this._onCompleted?.()
   }
 
-  _remove(): void {
-    if (this.prevNode) {
-      this.prevNode.nextNode = this.nextNode
+  private _updateTimelineReferences(node: AnimationTimelineNodeImpl): void {
+    const timeline = this.timeline as any
+
+    if (timeline._tailNode == this) {
+      timeline._tailNode = node
+    }
+
+    if (timeline._nextNode == this) {
+      timeline._nextNode = node
+    }
+  }
+
+  private _updateNodeLinks(node: AnimationTimelineNodeImpl): void {
+    if (this._prevNode) {
+      this._prevNode._nextNode = node
+    }
+
+    if (this._nextNode) {
+      this._nextNode._prevNode = node
+    }
+  }
+
+  private _remove(): void {
+    const timeline = this.timeline as any
+
+    if (this._prevNode) {
+      this._prevNode._nextNode = this._nextNode
     }
     else {
-      (this.timeline as any).nextNode = this.nextNode
+      timeline._nextNode = this._nextNode
     }
 
-    if (this.nextNode) {
-      this.nextNode.prevNode = this.prevNode
+    if (this._nextNode) {
+      this._nextNode._prevNode = this._prevNode
     }
 
-    if ((this.timeline as any).tailNode == this) {
-      (this.timeline as any).tailNode = this.prevNode
+    if (timeline._tailNode === this) {
+      timeline._tailNode = this._prevNode
     }
 
-    if ((this.timeline as any).nextNode == this) {
-      (this.timeline as any).nextNode = this.nextNode
+    if (timeline._nextNode === this) {
+      timeline._nextNode = this._nextNode
     }
 
     this._onCompleted?.()
@@ -179,58 +200,65 @@ class AnimationTimelineNodeImpl implements AnimationTimelineNode {
       this._remove()
     }
 
-    if (this.subNode) {
-      let anim: AnimationTimelineNodeImpl | undefined = this.subNode
-      while (anim != null) {
-        if (!anim._completed) {
-          anim._completed = true
-          anim._remove()
-        }
-        anim = anim.subNode
+    this._revokeSubNodes()
+  }
+
+  private _revokeSubNodes(): void {
+    if (!this._subNode) {
+      return
+    }
+
+    let current: AnimationTimelineNodeImpl | undefined = this._subNode
+    while (current) {
+      if (!current._completed) {
+        current._completed = true
+        current._remove()
       }
+      current = current._subNode
     }
   }
 
   sub(index: number): AnimationTimelineNode | undefined
   sub(index: 0): this
   sub(index: number): AnimationTimelineNode | this | undefined {
-    let node: AnimationTimelineNodeImpl | undefined = this
+    let current: AnimationTimelineNodeImpl | undefined = this
     let i = 0
-    while (node != null) {
-      if (i == index)
-        return node as any
-      i += 1
-      node = node.subNode
+
+    while (current && i !== index) {
+      current = current._subNode
+      i++
     }
+
+    return current as any
   }
 
   get startTime(): number | undefined {
     return this._startTime
   }
 
-  get started() {
+  get started(): boolean {
     return this._started
   }
 
-  get completed() {
+  get completed(): boolean {
     return this._completed
   }
 
-  get error() {
+  get error(): boolean {
     return this._error
   }
 }
 
-export type AnimationInit =
+export type AnimationInitial =
   | { duration: number, animator?: Animator, timing?: TimingFunction }
   | [duration: number, animator?: Animator, timing?: TimingFunction]
   | number // delay (ms)
 
-export type AnimationPromise = Promise<AnimationTimeline> & { revoke: () => void, readonly node: AnimationTimelineNode, readonly promise: Promise<AnimationTimeline>, readonly and: AnimationTimeline['animate'] }
+export type AnimationPromise = Promise<AnimationTimeline> & { revoke: () => void, readonly node: AnimationTimelineNode, readonly promise: Promise<AnimationTimeline> }
 export type Deferred<T> = [promise: Promise<T>, resolve: (value: T) => void, reject: (err: any) => void]
 
 export const linear: TimingFunction = x => x
-export const noop: Animator = (_) => {}
+export const noop: Animator = (_) => { }
 
 export function deferred<T>(): Deferred<T> {
   let resolve, reject
@@ -242,241 +270,393 @@ export function deferred<T>(): Deferred<T> {
   return [promise, resolve!, reject!]
 }
 
+export interface AnimationTimeline {
+  /**
+   * Create and add a new animation sequence
+   * @param inits Animation initialization parameters
+   */
+  animate: (...inits: AnimationInitial[]) => AnimationPromise
+
+  /**
+   * Revoke a specified animation node
+   * @param node The animation node to revoke
+   * @param deep Whether to perform deep search in child nodes
+   */
+  revoke: (node: AnimationTimelineNode, deep?: boolean) => boolean
+
+  /**
+   * Start the timeline
+   */
+  start: () => void
+
+  /**
+   * Pause the timeline
+   */
+  pause: () => void
+
+  /**
+   * Resume the timeline
+   */
+  resume: () => void
+
+  /**
+   * Reset the timeline
+   */
+  reset: () => void
+
+  /**
+   * Loop execution of animation function
+   * @param fn The animation function to loop
+   */
+  loop: (fn: (timeline: this) => (Promise<unknown> | Promise<unknown>[])) => Promise<AnimationTimeline> & { stop: () => void }
+
+  /**
+   * Wait for all promises to complete
+   * @param promises Array of promises to wait for
+   */
+  all: (...promises: Promise<unknown>[]) => Promise<this>
+
+  /**
+   * Create a delay animation
+   * @param duration Delay duration in milliseconds
+   */
+  delay: (duration: number) => AnimationPromise
+
+  /**
+   * Repeat animation sequence
+   * @param count Number of repetitions
+   * @param inits Animation initialization parameters
+   */
+  repeat: (count: number, ...inits: AnimationInitial[]) => AnimationPromise
+
+  /**
+   * Define a reusable animation function
+   * @param fn Animation function
+   */
+  define: <T extends AnimateFn>(fn: T) => ((timeline?: AnimationTimeline) => ReturnType<T>)
+
+  /**
+   * Execute animation function once
+   * @param fn Animation function
+   */
+  once: <T extends AnimateFn>(fn: T) => ReturnType<T>
+
+  /**
+   * Animation clock
+   */
+  readonly clock: AnimationClock
+}
+
 class AnimationTimelineImpl implements AnimationTimeline {
-  private nextNode?: AnimationTimelineNodeImpl
-  private tailNode?: AnimationTimelineNodeImpl
-  public readonly clock: AnimationClock = new AnimationClock()
-  private timer?: number
+  private _nextNode?: AnimationTimelineNodeImpl
+  private _tailNode?: AnimationTimelineNodeImpl
+  private _timer?: number
+  private readonly _clock: AnimationClock = new AnimationClock()
+  private _isPolling: boolean = false
 
   public readonly animate = this.enqueue.bind(this)
 
-  enqueue(first: AnimationInit, ...inits: AnimationInit[]): AnimationPromise
-  enqueue(...i: AnimationInit[]): AnimationPromise | undefined
-  enqueue(...i: AnimationInit[]): AnimationPromise | undefined {
-    if (i.length < 1) {
-      throw new Error('No animation inits provided')
+  enqueue(first: AnimationInitial, ...inits: AnimationInitial[]): AnimationPromise
+  enqueue(...inits: AnimationInitial[]): AnimationPromise | undefined
+  enqueue(...inits: AnimationInitial[]): AnimationPromise | undefined {
+    this._validateAnimationInitials(inits)
+    const normalizedInits = this._normalizeAnimationInitials(inits)
+    const [promise, resolve, reject] = deferred<this>()
+    const rootNode = this._createRootNode(normalizedInits[0], reject)
+
+    this._linkRootNode(rootNode)
+    this._createAndLinkChildNodes(rootNode, normalizedInits.slice(1), reject, resolve)
+    if (!this._isPolling) {
+      this.start()
     }
 
-    const inits = i.map((init) => {
+    return this._createAnimationPromise(promise, rootNode)
+  }
+
+  async all(...promises: Promise<unknown>[]): Promise<this> {
+    await Promise.all(promises)
+    return this
+  }
+
+  private _validateAnimationInitials(inits: AnimationInitial[]): void {
+    if (inits.length < 1) {
+      throw new Error('Animation initialization parameters cannot be empty')
+    }
+  }
+
+  private _normalizeAnimationInitials(inits: AnimationInitial[]): Array<{ duration: number, animator?: Animator, timing?: TimingFunction }> {
+    return inits.map((init) => {
       if (typeof init === 'number') {
         return { duration: init }
       }
-      else if (Array.isArray(init)) {
-        return { duration: init[0], animator: init[1], timing: init[2] }
+      if (Array.isArray(init)) {
+        const [duration, animator, timing] = init
+        return { duration, animator, timing }
       }
-      else {
-        return init
-      }
+      return init
     })
+  }
 
-    const [p, resolve, reject] = deferred<this>()
+  private _createRootNode(
+    init: { duration: number, animator?: Animator, timing?: TimingFunction },
+    reject: (err: any) => void,
+  ): AnimationTimelineNodeImpl {
+    return new AnimationTimelineNodeImpl(
+      this,
+      init.duration,
+      init.animator,
+      init.timing,
+      reject,
+      this._tailNode,
+    )
+  }
 
-    const rootNode = new AnimationTimelineNodeImpl(this, inits[0].duration, inits[0].animator, inits[0].timing, reject, this.tailNode)
-
-    if (this.nextNode == null) {
-      this.nextNode = rootNode
+  private _linkRootNode(rootNode: AnimationTimelineNodeImpl): void {
+    if (!this._nextNode) {
+      this._nextNode = rootNode
     }
 
-    if (this.tailNode) {
-      this.tailNode.nextNode = rootNode
+    if (this._tailNode) {
+      (this._tailNode as any)._nextNode = rootNode
     }
-    this.tailNode = rootNode
+    this._tailNode = rootNode
+  }
 
-    let node: AnimationTimelineNodeImpl = rootNode
+  private _createAndLinkChildNodes(
+    rootNode: AnimationTimelineNodeImpl,
+    inits: Array<{ duration: number, animator?: Animator, timing?: TimingFunction }>,
+    reject: (err: any) => void,
+    resolve: (value: this) => void,
+  ): void {
+    let currentNode: AnimationTimelineNodeImpl = rootNode
 
-    const childReject = (e: any) => {
-      reject(e)
-      rootNode._error = true
+    for (const init of inits) {
+      const childNode = new AnimationTimelineNodeImpl(
+        this,
+        init.duration,
+        init.animator,
+        init.timing,
+        reject,
+      )
+      ;(currentNode as any)._subNode = childNode
+      currentNode = childNode
     }
 
-    for (let i = 1; i < inits.length; i += 1) {
-      const subNode = new AnimationTimelineNodeImpl(this, inits[i].duration, inits[i].animator, inits[i].timing, childReject)
-      node.subNode = subNode
-      node = subNode
-    }
+    currentNode._onCompleted = () => resolve(this)
+  }
 
-    node._onCompleted = () => resolve(this)
-
-    this.start()
-
-    const p0 = Object.assign(p, {
+  private _createAnimationPromise(promise: Promise<this>, rootNode: AnimationTimelineNodeImpl): AnimationPromise {
+    const animationPromise = Object.assign(promise, {
       revoke: rootNode.revoke.bind(rootNode),
       node: rootNode,
-    }) as any as AnimationPromise
+    }) as unknown as AnimationPromise
 
-    Object.defineProperty(p0, 'promise', {
+    Object.defineProperty(animationPromise, 'promise', {
       get() {
-        return p
+        return promise
       },
     })
 
-    Object.defineProperty(p0, 'and', {
-      value: this.animate,
-    })
-    return p0
+    return animationPromise
   }
 
-  private poll(): boolean {
-    if (this.clock.isPaused) {
-      return true
-    }
-
-    const ts = this.clock.now()
-
-    if (this.nextNode != null) {
-      const shouldComplete = new Set<AnimationTimelineNodeImpl>()
-      let node: AnimationTimelineNodeImpl | undefined = this.nextNode
-      while (node != null) {
-        if (node.runStep(ts))
-          shouldComplete.add(node)
-
-        node = node.nextNode
-      }
-
-      if (shouldComplete.size != 0)
-        shouldComplete.forEach(node => node._complete())
-
-      return this.nextNode != null
-    }
-    else {
+  private _poll(): boolean {
+    if (this._clock.isPaused || !this._nextNode) {
       return false
     }
+
+    const now = this._clock.now()
+    const nodesToComplete = this._processNodes(now)
+
+    if (nodesToComplete.size > 0) {
+      this._completeNodes(nodesToComplete)
+    }
+
+    const hasMoreNodes = this._nextNode != null
+    if (!hasMoreNodes) {
+      this._isPolling = false
+    }
+
+    return hasMoreNodes
   }
 
-  private _launch(): number {
-    if (this.timer) {
-      return this.timer
+  private _processNodes(ts: number): Set<AnimationTimelineNodeImpl> {
+    const nodesToComplete = new Set<AnimationTimelineNodeImpl>()
+    let currentNode: any = this._nextNode
+
+    while (currentNode) {
+      if (currentNode._tick(ts)) {
+        nodesToComplete.add(currentNode)
+      }
+      currentNode = currentNode._nextNode
     }
 
+    return nodesToComplete
+  }
+
+  private _completeNodes(nodes: Set<AnimationTimelineNodeImpl>): void {
+    nodes.forEach(node => node._complete())
+  }
+
+  private _launch(): void {
+    if (this._timer) {
+      return
+    }
+
+    this._isPolling = true
     const loop = () => {
-      if (this.poll()) {
-        this.timer = requestAnimationFrame(loop)
+      if (this._poll()) {
+        this._timer = requestAnimationFrame(loop)
       }
       else {
-        this.timer = undefined
-        this.reset()
+        this._cleanup()
       }
     }
 
-    return this.timer = requestAnimationFrame(loop)
+    this._timer = requestAnimationFrame(loop)
+  }
+
+  private _cleanup(): void {
+    this._timer = undefined
+    this.reset()
   }
 
   pause(): void {
-    if (!this.paused && this.timer != null) {
-      cancelAnimationFrame(this.timer)
-      this.clock.pause()
-      this.timer = undefined
+    if (!this.paused && this._timer != null) {
+      cancelAnimationFrame(this._timer)
+      this._clock.pause()
+      this._timer = undefined
     }
   }
 
   start(): void {
-    if (this.timer == null && !this.paused) {
-      this.clock.reset()
+    if (this._timer == null && !this.paused) {
+      this._clock.reset()
       this._launch()
     }
   }
 
   resume(): void {
     if (this.paused) {
-      this.clock.resume()
+      this._clock.resume()
       this._launch()
     }
   }
 
   get paused(): boolean {
-    return this.clock.isPaused
+    return this._clock.isPaused
   }
 
   reset(): void {
-    if (this.timer) {
-      cancelAnimationFrame(this.timer)
-      this.timer = undefined
+    this._stopAnimation()
+    this._resetState()
+  }
+
+  private _stopAnimation(): void {
+    if (this._timer) {
+      cancelAnimationFrame(this._timer)
+      this._timer = undefined
     }
-    this.clock.reset()
-    this.nextNode = undefined
-    this.tailNode = undefined
+  }
+
+  private _resetState(): void {
+    this._clock.reset()
+    this._nextNode = undefined
+    this._tailNode = undefined
+    this._isPolling = false
   }
 
   revoke(node: AnimationTimelineNode, deep = false): boolean {
-    if (node.timeline != this)
+    if (!(node instanceof AnimationTimelineNodeImpl) || node.timeline !== this) {
       return false
+    }
 
-    let n: AnimationTimelineNodeImpl | undefined = this.nextNode
+    return this._findAndRevokeNode(node, deep)
+  }
 
-    while (n != null) {
-      if (n == node) {
-        n.revoke()
+  private _findAndRevokeNode(targetNode: AnimationTimelineNodeImpl, deep: boolean): boolean {
+    let currentNode: any = this._nextNode
+
+    while (currentNode) {
+      if (currentNode === targetNode) {
+        currentNode.revoke()
         return true
       }
 
-      if (deep && n.subNode) {
-        let s: AnimationTimelineNodeImpl | undefined = n.subNode
-        while (s != null) {
-          if (s == node) {
-            s.revoke()
-            return true
-          }
-
-          s = s.subNode
+      if (deep) {
+        const found = this._searchInSubNodes(currentNode, targetNode)
+        if (found) {
+          return true
         }
       }
 
-      n = n.nextNode
+      currentNode = currentNode.nextNode
     }
 
     return false
   }
 
-  all(...p: Promise<unknown>[]): Promise<this> {
-    return Promise.all(p).then(() => this)
+  private _searchInSubNodes(node: AnimationTimelineNodeImpl, targetNode: AnimationTimelineNodeImpl): boolean {
+    let subNode = (node as any)._subNode
+    while (subNode) {
+      if (subNode === targetNode) {
+        subNode.revoke()
+        return true
+      }
+      subNode = subNode._subNode
+    }
+    return false
   }
 
-  loop(fn: (timeline: this) => (Promise<unknown> | (Promise<unknown> | Promise<unknown>[])[])): () => void {
-    let stop = false
+  loop(fn: (timeline: this) => (Promise<unknown> | Promise<unknown>[])): Promise<AnimationTimeline> & { stop: () => void } {
+    let isActive = true
 
-    const loop = () => {
-      const r = fn(this)
-      ;(Array.isArray(r) ? Promise.all(r.flat(1)) : r).then(() => {
-        if (!stop) {
-          loop()
-        }
-      })
+    const runLoop = async () => {
+      // eslint-disable-next-line no-unmodified-loop-condition
+      while (isActive) {
+        const result = fn(this)
+        await (Array.isArray(result) ? Promise.all(result.flat(1)) : result)
+      }
+
+      return this
     }
 
-    loop()
-
-    return () => {
-      stop = true
-    }
+    return Object.assign(runLoop(), {
+      stop: () => {
+        isActive = false
+      },
+    })
   }
 
   delay(duration: number): AnimationPromise {
     return this.enqueue(animation(duration))
   }
 
-  repeat(n: number, ...inits: AnimationInit[]): AnimationPromise {
-    if (inits.length < 1) {
-      throw new Error('No animation inits provided')
-    }
+  repeat(count: number, ...inits: AnimationInitial[]): AnimationPromise {
+    this._validateAnimationInitials(inits)
+    const repeatedInits = this._createRepeatedInits(count, inits)
+    return this.enqueue(...repeatedInits)!
+  }
 
-    return this.enqueue(...Array.from({ length: n }, () => inits).flat())!
+  private _createRepeatedInits(count: number, inits: AnimationInitial[]): AnimationInitial[] {
+    return Array.from({ length: count }, () => inits).flat()
   }
 
   define<T extends AnimateFn>(fn: T): (timeline?: AnimationTimeline) => ReturnType<T> {
-    return (timeline?: AnimationTimeline) => fn(timeline ?? this) as any
+    return (timeline?: AnimationTimeline) => fn(timeline ?? this) as ReturnType<T>
   }
 
   once<T extends AnimateFn>(fn: T): ReturnType<T> {
-    return fn(this) as any
+    return fn(this) as ReturnType<T>
+  }
+
+  get clock(): AnimationClock {
+    return this._clock
   }
 }
 
 export function second(s: number): number {
   return s * 1000
-}
-
-export function millisecond(ms: number): number {
-  return ms
 }
 
 export function createTimeline(): AnimationTimeline {
@@ -487,27 +667,10 @@ export function isTimeline(value: any): value is AnimationTimeline {
   return value instanceof AnimationTimelineImpl
 }
 
-export function animation(duration: number, animator?: Animator, timing?: TimingFunction): AnimationInit {
+export function animation(duration: number, animator?: Animator, timing?: TimingFunction): AnimationInitial {
   return { duration, animator, timing }
 }
 
 animation.delay = (duration: number) => animation(duration)
 
 export type AnimateFn = (timeline: AnimationTimeline) => (AnimationPromise | Promise<AnimationTimeline> | Promise<void>)
-
-export interface AnimationTimeline {
-  animate: (...inits: AnimationInit[]) => AnimationPromise
-  revoke: (node: AnimationTimelineNode, deep?: boolean) => boolean
-  start: () => void
-  pause: () => void
-  resume: () => void
-  reset: () => void
-  loop: (fn: (timeline: this) => (Promise<unknown> | Promise<unknown>[])) => () => void
-  all: (...p: Promise<unknown>[]) => Promise<this>
-  delay: (duration: number) => AnimationPromise
-  repeat: (n: number, ...inits: AnimationInit[]) => AnimationPromise
-  define: <T extends AnimateFn>(fn: T) => ((timeline?: AnimationTimeline) => ReturnType<T>)
-  once: <T extends AnimateFn>(fn: T) => ReturnType<T>
-
-  readonly clock: AnimationClock
-}
