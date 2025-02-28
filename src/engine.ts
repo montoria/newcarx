@@ -1,4 +1,4 @@
-import { effect, signal } from 'alien-signals'
+import { effect } from 'alien-signals'
 
 export type WidgetFactory<T> = (props: T) => RenderFn
 export type RenderFn = (engine: any) => void

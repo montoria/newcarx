@@ -1,20 +1,13 @@
-import type { AnimateFn, Animator } from './animation'
+import type { AnimationEffect } from './animation'
+import type { MaybeAccessor } from './utils'
 import { signal } from 'alien-signals'
-import { animation, createTimeline, linear, second } from './animation'
+import { AnimationTimeline } from './animation'
+import { easeBounce, linear, reverse } from './easing'
 import { _, Engine } from './engine'
-import { easeBounce, reverse } from './timing'
+import { toValue } from './utils'
 
 const engine = new Engine()
-const t = createTimeline()
-
-export type MaybeAccessor<T> = T | (() => T)
-export function toValue<T>(value: MaybeAccessor<T>): T {
-  if (typeof value == 'function') {
-    return (value as any)()
-  }
-
-  return value
-}
+const t = new AnimationTimeline()
 
 const Rect = _<{
   x: MaybeAccessor<number>
@@ -40,13 +33,15 @@ engine.run(App())
 function App() {
   const y = signal(0)
 
-  const move: Animator = s => y(s * 500)
+  const move: AnimationEffect = s => y(s * 500)
 
-  t.loop(
+  t.infinite(
     t => t.animate(
-      [second(0.5), move, reverse(linear)],
-      [second(0.5), move, easeBounce],
-      second(0.5),
+      [
+        [500, move, reverse(linear)],
+        [500, move, easeBounce],
+        [500],
+      ],
     ),
   )
 

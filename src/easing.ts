@@ -1,43 +1,25 @@
-import type { AnimationInit, TimingFunction } from './animation'
+import type { AnimationEasingFn } from './animation'
 
 const c = 1.701_58
 const n = 7.5625
 const d = 2.75
 
-export function inverse<T extends TimingFunction | AnimationInit>(f: T): T {
-  if (typeof f === 'function') {
-    return ((x: number): number => 1 - f(1 - x)) as any
-  }
-  else if (Array.isArray(f)) {
-    return typeof f[2] === 'function' ? [f[0], f[1], inverse(f[2])] as any : f
-  }
-  else if (typeof f === 'object') {
-    return 'timing' in f ? { ...f, timing: inverse(f.timing!) } as any : f
-  }
-  else {
-    return f
-  }
+export function linear(x: number): number {
+  return x
 }
 
-export function reverse<T extends TimingFunction | AnimationInit>(f: T): T {
-  if (typeof f === 'function') {
-    return ((x: number): number => f(1 - x)) as any
-  }
-  else if (Array.isArray(f)) {
-    return typeof f[2] === 'function' ? [f[0], f[1], reverse(f[2])] as any : f
-  }
-  else if (typeof f === 'object') {
-    return 'timing' in f ? { ...f, timing: reverse(f.timing!) } as any : f
-  }
-  else {
-    return f
-  }
+export function inverse(f: AnimationEasingFn = linear): AnimationEasingFn {
+  return (x: number): number => 1 - f(1 - x)
+}
+
+export function reverse(f: AnimationEasingFn = linear): AnimationEasingFn {
+  return (x: number): number => f(1 - x)
 }
 
 function solve(
-  easeIn: TimingFunction,
-  easeOut?: TimingFunction,
-): TimingFunction {
+  easeIn: AnimationEasingFn,
+  easeOut?: AnimationEasingFn,
+): AnimationEasingFn {
   easeOut ??= inverse(easeIn)
 
   return (x: number): number =>
@@ -45,15 +27,15 @@ function solve(
 }
 
 function _(
-  easeIn: TimingFunction,
-): [TimingFunction, TimingFunction, TimingFunction] {
-  const easeOut: TimingFunction = inverse(easeIn)
-  const easeInOut: TimingFunction = solve(easeIn, easeOut)
+  easeIn: AnimationEasingFn,
+): [AnimationEasingFn, AnimationEasingFn, AnimationEasingFn] {
+  const easeOut: AnimationEasingFn = inverse(easeIn)
+  const easeInOut: AnimationEasingFn = solve(easeIn, easeOut)
 
   return [easeIn, easeOut, easeInOut]
 }
 
-const easeSine: TimingFunction = x => 1 - Math.cos((x * Math.PI) / 2)
+const easeSine: AnimationEasingFn = x => 1 - Math.cos((x * Math.PI) / 2)
 export const [easeInSine, easeOutSine, easeInOutSine] = _(easeSine)
 
 export const [easeInQuad, easeOutQuad, easeInOutQuad] = _(x => x ** 2)
@@ -61,21 +43,21 @@ export const [easeInCubic, easeOutCubic, easeInOutCubic] = _(x => x ** 3)
 export const [easeInQuart, easeOutQuart, easeInOutQuart] = _(x => x ** 4)
 export const [easeInQuint, easeOutQuint, easeInOutQuint] = _(x => x ** 5)
 
-const easeExpo: TimingFunction = x => x || 2 ** (10 * x - 10)
-const easeCirc: TimingFunction = x => 1 - Math.sqrt(1 - x ** 2)
-const easeBack: TimingFunction = x => (c + 1) * x ** 3 - c * x ** 2
+const easeExpo: AnimationEasingFn = x => x || 2 ** (10 * x - 10)
+const easeCirc: AnimationEasingFn = x => 1 - Math.sqrt(1 - x ** 2)
+const easeBack: AnimationEasingFn = x => (c + 1) * x ** 3 - c * x ** 2
 export const [easeInExpo, easeOutExpo, easeInOutExpo] = _(easeExpo)
 export const [easeInCirc, easeOutCirc, easeInOutCirc] = _(easeCirc)
 export const [easeInBack, easeOutBack, easeInOutBack] = _(easeBack)
 
-const easeElastic: TimingFunction = x =>
+const easeElastic: AnimationEasingFn = x =>
   -Math.sin(((80 * x - 44.5) * Math.PI) / 9) * 2 ** (20 * x - 11)
-export const easeInElastic: TimingFunction = x =>
+export const easeInElastic: AnimationEasingFn = x =>
   -Math.sin(((20 * x - 21.5) * Math.PI) / 3) * 2 ** (10 * x - 10)
-export const easeOutElastic: TimingFunction = inverse(easeInElastic)
-export const easeInOutElastic: TimingFunction = solve(easeElastic)
+export const easeOutElastic: AnimationEasingFn = inverse(easeInElastic)
+export const easeInOutElastic: AnimationEasingFn = solve(easeElastic)
 
-export const easeBounce: TimingFunction = (x: number): number =>
+export const easeBounce: AnimationEasingFn = (x: number): number =>
   x < 1 / d
     ? n * x ** 2
     : x < 2 / d
@@ -84,7 +66,7 @@ export const easeBounce: TimingFunction = (x: number): number =>
         ? n * (x - 2.25 / d) ** 2 + 0.9375
         : n * (x - 2.625 / d) ** 2 + 0.984_375
 
-export function cubicBezier(p1x: number, p1y: number, p2x: number, p2y: number): TimingFunction {
+export function cubicBezier(p1x: number, p1y: number, p2x: number, p2y: number): AnimationEasingFn {
   const ax = 1 + 3 * (p1x - p2x)
   const bx = 3 * (p2x - 2 * p1x)
   const cx = 3 * p1x
@@ -141,7 +123,7 @@ export function cubicBezier(p1x: number, p1y: number, p2x: number, p2y: number):
 
 export type Keyframe = [t: number | number[], x: number]
 
-export function keyframes(ease: TimingFunction, ...keyframes: Keyframe[]): TimingFunction {
+export function keyframes(ease: AnimationEasingFn, ...keyframes: Keyframe[]): AnimationEasingFn {
   const points: [number, number][] = (keyframes as any[]).flatMap(v => Array.isArray(v[0]) ? v[0].map(x => [x, v[1]] as const) : [v])
   points.sort((a, b) => a[0] - b[0])
 

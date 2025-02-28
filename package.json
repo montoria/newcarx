@@ -8,13 +8,13 @@
     "build": "tsc && vite build",
     "preview": "vite preview"
   },
+  "dependencies": {
+    "alien-signals": "^1.0.3"
+  },
   "devDependencies": {
     "@antfu/eslint-config": "^4.1.1",
     "eslint": "^9.20.0",
     "typescript": "~5.7.2",
     "vite": "^6.1.0"
-  },
-  "dependencies": {
-    "alien-signals": "^1.0.3"
   }
 }
